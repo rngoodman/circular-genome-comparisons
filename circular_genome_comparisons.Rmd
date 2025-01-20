@@ -1,0 +1,319 @@
+---
+title: "Circular Genome Comparison"
+author: "Richard Goodman"
+date: "2025-01-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(dev = "png", fig.width = 8, fig.height = 8)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+## Introduction
+
+This tutorial will take two genome sequences and run a blastn comparison then visulaise the comparison as a circulise output 
+
+This workflow involves using BLAST for sequence alignment, parsing the results, and visualizing the differences using circlize in R (based on the original circos plot).
+
+Using circos plots are useful for several cases:
+
+* Mobile Genetic Element transfer 
+* Evolutionary studies comparing ancestor strains with progeny strains
+* Comparison to reference strains
+
+Within the code you can vary the percentage identity and the length of coverage.
+
+This workflow uses BLAST to align the genomes but other comparison tools could be used e.g. mummer. The parsing of the file into R would just need tweaking and checking that table headings match up. 
+
+## Part 1 - Genome download and comparison in bash
+
+### 1.1: Download files with wget
+
+As an example we will be working with E. coli genomes from one my former papers:
+
+[Goodman RN, Tansirichaiya S, Brouwer MSM, Roberts AP. 2023. Intracellular Transposition of Mobile Genetic Elements Associated with the Colistin Resistance Gene mcr-1. Microbiol Spectr 11:e03278-22.](https://doi.org/10.1128/spectrum.03278-22)
+
+In this work we produced four hybrid assembled _E. coli_ genomes with different mobile genetic element insertions in the chromosome and plasmids. This makes it ideal for genomic comparison figures as it shows what moves where. 
+
+Each _E. coli_ started off with three replicons: 
+
+1.  a chromosome
+2.  a plasmid called pE2899
+3. a plasmid called pBACpAK
+
+The following commands download these assembled genomes:
+
+```{bash, eval=FALSE}
+
+# 9A-1-1
+wget "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/026/119/875/GCF_026119875.1_ASM2611987v1/GCF_026119875.1_ASM2611987v1_genomic.fna.gz"
+# 9A-2-7
+wget "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/026/119/895/GCF_026119895.1_ASM2611989v1/GCF_026119895.1_ASM2611989v1_genomic.fna.gz"
+# 9A 3-9
+wget "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/026/119/915/GCF_026119915.1_ASM2611991v1/GCF_026119915.1_ASM2611991v1_genomic.fna.gz"
+# 9A-4-9
+wget "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/026/119/955/GCF_026119955.1_ASM2611995v1/GCF_026119955.1_ASM2611995v1_genomic.fna.gz"
+```
+
+### 1.2: Rename files to make data analysis easier
+
+```{bash, eval=FALSE}
+
+mv GCF_026119875.1_ASM2611987v1_genomic.fna.gz 9A-1-1.fna.gz 
+mv GCF_026119895.1_ASM2611989v1_genomic.fna.gz 9A-2-7.fna.gz
+mv GCF_026119915.1_ASM2611991v1_genomic.fna.gz 9A-3-9.fna.gz
+mv GCF_026119955.1_ASM2611995v1_genomic.fna.gz 9A-4-9.fna.gz
+
+```
+
+### 1.3: Unzip all files
+
+```{bash, eval=FALSE}
+
+gunzip *.fna.gz
+
+```
+
+### 1.4: Rename all contig headers i.e. everything after the ">"
+
+Pattern breakdown:
+
+* `^(>[^ ]+)` - Captures the initial sequence identifier (e.g., >NZ_CP102708.1).
+* `.* (chromosome|plasmid [^,]+)` - Captures the desired terms:
+* `chromosome (single word).`
+* `plasmid [^,]+ (the full plasmid name before a comma or end of the line).`
+* `>\2` - Replaces the header with the extracted part.
+
+Second sed step:
+
+* `s/ /_/g` - Replaces spaces with underscores.
+* `s/^>/>9A-3-9_/` - Adds the prefix to all headers.
+
+Note: this pattern is specific to these fasta files, use a different syntax for different headers in different fasta files. 
+
+```{bash, eval=FALSE}
+
+# Check fasta headings
+grep "^>" *.fna
+
+# For single files
+sed -E 's/^(>[^ ]+) .* (chromosome|plasmid [^,]+).*/>\2/' 9A-3-9.fna | sed -E 's/ /_/g; s/^>/>9A-3-9_/' > 9A-3-9.fasta
+
+# For multiple files
+for file in *.fna; do
+    base=$(basename "$file" .fna)
+    sed -E 's/^(>[^ ]+) .* (chromosome|plasmid [^,]+).*/>\2/' "$file" | \
+    sed -E "s/ /_/g; s/^>/>${base}_/" > "${base}.fasta"
+done
+
+# Check fasta headings again
+grep "^>" *.fasta
+
+```
+
+### 1.5: Install seqkit
+
+Make sure you have seqkit installed. You can download it from [Wei Shen's Github page](https://github.com/shenwei356/seqkit).
+
+### 1.6: Use seqkit to get contig length
+
+```{bash, eval=FALSE}
+seqkit fx2tab -n -l 9A-1-1.fasta > 9A-1-1_contig_lengths.tsv
+
+seqkit fx2tab -n -l 9A-2-7.fasta > 9A-2-7_contig_lengths.tsv
+
+seqkit fx2tab -n -l 9A-3-9.fasta > 9A-3-9_contig_lengths.tsv
+
+seqkit fx2tab -n -l 9A-4-9.fasta > 9A-4-9_contig_lengths.tsv
+
+```
+
+### 1.7: Install BLAST
+
+Make sure you have BLAST installed. You can download it from the [NCBI BLAST](https://blast.ncbi.nlm.nih.gov/Blast.cgi?PAGE_TYPE=BlastDocs&DOC_TYPE=Download) website.
+
+### 1.8: Use BLAST to align the sequences
+
+Use `BLAST` to align the sequences in the FASTA files.
+
+```{bash, eval=FALSE}
+# Define your reference and query genomes
+REF=9A-1-1.fasta
+Q=9A-2-7.fasta
+
+# Check your reference and query genomes
+$REF
+$Q
+
+# Create BLAST databases for both genomes
+makeblastdb -in ${REF} -dbtype nucl -out ${REF}_db
+
+makeblastdb -in ${Q} -dbtype nucl -out ${Q}_db
+
+# Perform QAST to compare genome1 to genome2
+blastn -query ${REF} -db ${Q}_db -out ${REF}_vs_${Q}.blastn -outfmt 6
+
+# Perform BLAST to compare genome2 to genome1
+blastn -query ${Q} -db ${REF}_db -out ${Q}_vs_${REF}.blastn -outfmt 6
+```
+
+
+## Part 2 - Visulisation with circulize in R
+
+### 2.1: Parse the BLAST results to get the alignments
+
+Parse the BLAST results to get the genome alignment information. 
+
+```{r Parse the BLAST results, warning = FALSE, message = FALSE}
+
+
+# Load necessary libraries
+library(Biostrings)
+library(dplyr)
+library(circlize)
+library(colorspace)
+
+parse_blast <- function(blast_file) {
+  blast_data <- read.table(blast_file, header = FALSE, stringsAsFactors = FALSE)
+  colnames(blast_data) <- c("qseqid", "sseqid", "pident", "length", "mismatch", 
+                            "gapopen", "qstart", "qend", "sstart", "send", 
+                            "evalue", "bitscore")
+  return(blast_data)
+}
+
+blast_data <- parse_blast("data/9A-2-7.fasta_vs_9A-1-1.fasta.blastn")
+
+head(blast_data)
+```
+
+### 2.2: Get genome lengths from seqkit table
+
+We need the full genome lengths so that we cna plot the true sizes of the contigs. For this we use the seqkit contig length files. 
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+
+# Read contig lengths from the seqkit output
+contig_lengths_ref <- read.table("data/9A-1-1_contig_lengths.tsv", header = FALSE, sep = "\t", stringsAsFactors = FALSE)
+contig_lengths_q <- read.table("data/9A-2-7_contig_lengths.tsv", header = FALSE, sep = "\t", stringsAsFactors = FALSE)
+
+contig_lengths = rbind(contig_lengths_ref, contig_lengths_q)
+
+colnames(contig_lengths) <- c("chr", "length")
+
+# Inspect the data
+head(contig_lengths)
+
+# Update genome length table with actual contig sizes
+genome_lengths <- contig_lengths %>%
+  dplyr::mutate(start = 0, end = length) %>%
+  dplyr::select(chr, start, end)
+
+# Add dummy numeric column as before
+genome_lengths$value <- 1
+
+# Check final genome lengths table
+print(genome_lengths)
+```
+
+### 2.3: Filter the BLAST results based on percentage identity and length
+
+For percentage identity: you can define a number e.g. 80% is
+`f_pc_ident = 80`
+
+For minimum length: you can define number of bp e.g. 1500bp is `f_length = 1500` or the % of the smallest contig e.g. 60% of the smallest contig (9A-2-7_plasmid_pBACpAK) is `f_length = (min(60*(genome_lengths$end)))`
+
+
+```{r}
+
+f_pc_ident = 99.5
+f_length = 1500
+
+blast_data = blast_data %>% filter(pident >= f_pc_ident & length > f_length)
+```
+
+### 2.4: Adding colour to plot 
+
+```{r}
+# Define colors for specific sequences
+# here 9A-1-1 is shades of red and 9A-2-7 is shades of blue 
+
+# Separate the genome lengths into two groups based on the "chr" name
+blue_genomes <- genome_lengths$chr[grep("9A-1-1", genome_lengths$chr)]
+red_genomes <- genome_lengths$chr[grep("9A-2-7", genome_lengths$chr)]
+
+# Assign shades of blue for "9A-1-1" genomes and shades of red for "9A-2-7" genomes
+blue_colors <- setNames(rainbow(length(blue_genomes), start = 0.6, end = 0.65), blue_genomes)
+red_colors <- setNames(rainbow(length(red_genomes), start = 0, end = 0.05), red_genomes)
+
+# Combine the two color sets
+colors <- c(blue_colors, red_colors)
+
+# Check the resulting colors
+print(colors)
+```
+
+
+### 2.5: Visualize with circlize
+
+
+```{r}
+
+### 2.5: Visualize with circlize #####
+
+# Clear previous plots
+circos.clear()
+circos.par(gap.degree = 5)
+
+# Initialize the genome data
+circos.genomicInitialize(genome_lengths, plotType = "axis")
+
+# Add a new track with different colors for each chromosome
+circos.genomicTrackPlotRegion(genome_lengths, panel.fun = function(region, value, ...) {
+  sector.index <- get.cell.meta.data("sector.index")
+  col <- colors[sector.index]
+  circos.genomicRect(region, value, col = col, border = NA)
+}, bg.border = NA, track.height = 0.1, ylim = c(0, 1))
+
+# Add custom sector labels with rotation
+circos.track(track.index = 1, panel.fun = function(x, y) {
+  sector.index <- get.cell.meta.data("sector.index")
+  xcenter <- get.cell.meta.data("xcenter")
+  circos.text(
+    x = xcenter, 
+    y = get.cell.meta.data("ylim")[1], 
+    labels = sector.index, 
+    facing = "clockwise", 
+    niceFacing = TRUE, 
+    adj = c(1.2, 0.5),
+    cex = 0.6
+  )
+}, bg.border = NA)
+
+# Plot the connections with specific colors
+for (i in 1:nrow(blast_data)) {
+  query_seq <- blast_data$qseqid[i]
+  color <- colors[query_seq]
+  
+  circos.genomicLink(
+    region1 = data.frame(chr = blast_data$qseqid[i], start = blast_data$qstart[i], end = blast_data$qend[i]),
+    region2 = data.frame(chr = blast_data$sseqid[i], start = blast_data$sstart[i], end = blast_data$send[i]),
+    col = adjustcolor(color, alpha.f = 0.5)
+  )
+}
+
+# Add a title to the plot with increased text size
+title("Genome Comparisons Using Circos Plot", cex.main = 2)
+
+# Clear circos plot to avoid affecting future plots
+circos.clear()
+
+```
+
+This plot shows the different replicons in the two genomes and the comparisons greater than 99.5% percentage identity and across a length more than 1500bp. Therefore we can work out where different MGEs have gone within the genome. It also represents repeated IS and Tn elements across the genome. 
+
+
+
