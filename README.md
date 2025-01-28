@@ -1,4 +1,4 @@
-# circular-genome-comparisons
+# Circular Genome Comparisons
 
 ![Example Plot](figures/9A-2-7_vs_9A-1-1_no_text.png)
 
