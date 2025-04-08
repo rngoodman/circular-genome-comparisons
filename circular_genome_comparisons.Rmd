@@ -31,7 +31,7 @@ This workflow uses BLAST to align the genomes but other comparison tools could b
 
 ### 1.1: Download files with wget
 
-As an example we will be working with E. coli genomes from one my former papers:
+As an example we will be working with E. coli genomes from one of my former papers:
 
 [Goodman RN, Tansirichaiya S, Brouwer MSM, Roberts AP. 2023. Intracellular Transposition of Mobile Genetic Elements Associated with the Colistin Resistance Gene mcr-1. Microbiol Spectr 11:e03278-22.](https://doi.org/10.1128/spectrum.03278-22)
 
